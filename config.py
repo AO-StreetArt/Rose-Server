@@ -34,6 +34,10 @@ class Settings:
         "true",
         "yes",
     )
+    s3_bucket_name: Optional[str] = os.getenv("S3_BUCKET_NAME")
+    s3_region_name: Optional[str] = os.getenv("S3_REGION_NAME")
+    s3_object_prefix: str = os.getenv("S3_OBJECT_PREFIX", "uploads/")
+    s3_public_url_prefix: Optional[str] = os.getenv("S3_PUBLIC_URL_PREFIX")
 
     def as_flask_config(self) -> Dict[str, object]:
         data = asdict(self)
@@ -48,6 +52,10 @@ class Settings:
             "BEDROCK_REGION": data["bedrock_region"],
             "REQUIRE_AUTH_FOR_HEALTH": data["require_auth_for_health"],
             "REQUIRE_AUTH_FOR_UI": data["require_auth_for_ui"],
+            "S3_BUCKET_NAME": data["s3_bucket_name"],
+            "S3_REGION_NAME": data["s3_region_name"],
+            "S3_OBJECT_PREFIX": data["s3_object_prefix"],
+            "S3_PUBLIC_URL_PREFIX": data["s3_public_url_prefix"],
         }
 
     def validate(self) -> None:
@@ -72,3 +80,9 @@ class Settings:
             raise EnvironmentError(
                 "Missing Bedrock configuration. Set BEDROCK_AGENT_ID and BEDROCK_AGENT_ALIAS_ID."
             )
+
+        if not self.s3_bucket_name:
+            raise EnvironmentError("Missing S3 bucket configuration. Set S3_BUCKET_NAME.")
+
+        if self.s3_object_prefix and self.s3_object_prefix.startswith("/"):
+            raise EnvironmentError("S3 object prefix must not start with a leading slash.")
