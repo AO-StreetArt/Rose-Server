@@ -69,8 +69,9 @@ def register_routes(app: Flask) -> None:
         if app.config.get("REQUIRE_AUTH_FOR_HEALTH", False):
             try:
                 ensure_authorized()
-            except AuthError as exc:
-                return jsonify({"error": str(exc)}), HTTPStatus.UNAUTHORIZED
+            except AuthError:
+                logger.exception("Health check authorization failed")
+                return jsonify({"error": "authentication failed"}), HTTPStatus.UNAUTHORIZED
         return jsonify({"status": "healthy"})
 
     @app.route("/api/chat", methods=["POST"])
@@ -92,9 +93,9 @@ def register_routes(app: Flask) -> None:
                 session_id=session_id,
                 enable_trace=enable_trace,
             )
-        except RuntimeError as exc:
+        except RuntimeError:
             logger.exception("Bedrock invocation error")
-            return jsonify({"error": str(exc)}), HTTPStatus.BAD_GATEWAY
+            return jsonify({"error": "chat service unavailable"}), HTTPStatus.BAD_GATEWAY
 
         return jsonify({"sessionId": result["sessionId"], "messages": result["messages"], "trace": result.get("trace")})
 
@@ -121,9 +122,9 @@ def register_routes(app: Flask) -> None:
                 estimator=estimator,
                 output_format=output_format,
             )
-        except RuntimeError as exc:
+        except RuntimeError:
             logger.exception("Depth estimation failed")
-            return jsonify({"error": str(exc)}), HTTPStatus.BAD_GATEWAY
+            return jsonify({"error": "depth estimation unavailable"}), HTTPStatus.BAD_GATEWAY
 
         return jsonify(result)
 
@@ -150,9 +151,9 @@ def register_routes(app: Flask) -> None:
                 content_type=content_type,
                 accept=accept,
             )
-        except RuntimeError as exc:
+        except RuntimeError:
             logger.exception("Segmentation inference failed")
-            return jsonify({"error": str(exc)}), HTTPStatus.BAD_GATEWAY
+            return jsonify({"error": "segmentation service unavailable"}), HTTPStatus.BAD_GATEWAY
 
         return jsonify(result)
 
@@ -203,21 +204,22 @@ def register_routes(app: Flask) -> None:
     @app.route("/", defaults={"path": ""})
     @app.route("/<path:path>")
     def serve_react(path: str):
-        build_dir = Path(app.config["REACT_BUILD_PATH"])
-        candidate = (build_dir / path).resolve()
+        build_dir = Path(app.config["REACT_BUILD_PATH"]).resolve()
         try:
-            candidate.relative_to(build_dir)
-        except ValueError:
+            candidate = (build_dir / Path(path)).resolve()
+            relative_path = candidate.relative_to(build_dir)
+        except (ValueError, OSError):
             return jsonify({"error": "invalid path"}), HTTPStatus.BAD_REQUEST
 
         if path and candidate.is_file():
-            return send_from_directory(build_dir, path)
+            return send_from_directory(build_dir, relative_path.as_posix())
 
         if app.config.get("REQUIRE_AUTH_FOR_UI", False):
             try:
                 ensure_authorized()
-            except AuthError as exc:
-                return jsonify({"error": str(exc)}), HTTPStatus.UNAUTHORIZED
+            except AuthError:
+                logger.exception("UI authorization failed")
+                return jsonify({"error": "authentication failed"}), HTTPStatus.UNAUTHORIZED
 
         index_path = build_dir / "index.html"
         if not index_path.exists():
