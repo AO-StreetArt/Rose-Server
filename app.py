@@ -21,6 +21,31 @@ from config import Settings
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_subpath(untrusted: str) -> Optional[Path]:
+    """Validate and sanitize a relative path using secure_filename on each component."""
+    if not untrusted:
+        return None
+
+    try:
+        prospective = Path(untrusted)
+    except (TypeError, ValueError):
+        return None
+
+    if prospective.is_absolute():
+        return None
+
+    sanitized_parts = []
+    for part in prospective.parts:
+        if part in {"", ".", ".."}:
+            return None
+        secure_part = secure_filename(part)
+        if not secure_part:
+            return None
+        sanitized_parts.append(secure_part)
+
+    return Path(*sanitized_parts)
+
+
 def create_app(settings: Optional[Settings] = None) -> Flask:
     settings = settings or Settings()
     settings.validate()
@@ -205,14 +230,20 @@ def register_routes(app: Flask) -> None:
     @app.route("/<path:path>")
     def serve_react(path: str):
         build_dir = Path(app.config["REACT_BUILD_PATH"]).resolve()
-        try:
-            candidate = (build_dir / Path(path)).resolve()
-            relative_path = candidate.relative_to(build_dir)
-        except (ValueError, OSError):
-            return jsonify({"error": "invalid path"}), HTTPStatus.BAD_REQUEST
 
-        if path and candidate.is_file():
-            return send_from_directory(build_dir, relative_path.as_posix())
+        if path:
+            sanitized = _sanitize_subpath(path)
+            if sanitized is None:
+                return jsonify({"error": "invalid path"}), HTTPStatus.BAD_REQUEST
+
+            candidate = (build_dir / sanitized).resolve()
+            try:
+                relative_path = candidate.relative_to(build_dir)
+            except (ValueError, OSError):
+                return jsonify({"error": "invalid path"}), HTTPStatus.BAD_REQUEST
+
+            if candidate.is_file():
+                return send_from_directory(build_dir, relative_path.as_posix())
 
         if app.config.get("REQUIRE_AUTH_FOR_UI", False):
             try:
