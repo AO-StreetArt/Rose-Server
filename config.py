@@ -23,6 +23,11 @@ class Settings:
     bedrock_agent_alias_id: Optional[str] = os.getenv("BEDROCK_AGENT_ALIAS_ID")
     bedrock_region: str = os.getenv("BEDROCK_REGION", "us-east-1")
 
+    # AWS SageMaker runtime configuration
+    sagemaker_region: str = os.getenv("SAGEMAKER_REGION", os.getenv("AWS_REGION", "us-east-1"))
+    sagemaker_depth_endpoint: Optional[str] = os.getenv("SAGEMAKER_DEPTH_ENDPOINT")
+    sagemaker_segmentation_endpoint: Optional[str] = os.getenv("SAGEMAKER_SEGMENTATION_ENDPOINT")
+
     # Optional behavior flags
     require_auth_for_health: bool = os.getenv("REQUIRE_AUTH_FOR_HEALTH", "false").lower() in (
         "1",
@@ -50,6 +55,9 @@ class Settings:
             "BEDROCK_AGENT_ID": data["bedrock_agent_id"],
             "BEDROCK_AGENT_ALIAS_ID": data["bedrock_agent_alias_id"],
             "BEDROCK_REGION": data["bedrock_region"],
+            "SAGEMAKER_REGION": data["sagemaker_region"],
+            "SAGEMAKER_DEPTH_ENDPOINT": data["sagemaker_depth_endpoint"],
+            "SAGEMAKER_SEGMENTATION_ENDPOINT": data["sagemaker_segmentation_endpoint"],
             "REQUIRE_AUTH_FOR_HEALTH": data["require_auth_for_health"],
             "REQUIRE_AUTH_FOR_UI": data["require_auth_for_ui"],
             "S3_BUCKET_NAME": data["s3_bucket_name"],
@@ -80,6 +88,15 @@ class Settings:
             raise EnvironmentError(
                 "Missing Bedrock configuration. Set BEDROCK_AGENT_ID and BEDROCK_AGENT_ALIAS_ID."
             )
+
+        missing_sagemaker = []
+        if not self.sagemaker_depth_endpoint:
+            missing_sagemaker.append("SAGEMAKER_DEPTH_ENDPOINT")
+        if not self.sagemaker_segmentation_endpoint:
+            missing_sagemaker.append("SAGEMAKER_SEGMENTATION_ENDPOINT")
+        if missing_sagemaker:
+            joined = ", ".join(missing_sagemaker)
+            raise EnvironmentError(f"Missing SageMaker configuration: {joined}")
 
         if not self.s3_bucket_name:
             raise EnvironmentError("Missing S3 bucket configuration. Set S3_BUCKET_NAME.")

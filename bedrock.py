@@ -4,7 +4,7 @@ import logging
 from typing import Dict, Optional
 from uuid import uuid4
 
-import boto3
+from boto3.session import Session
 from botocore.exceptions import BotoCoreError, ClientError
 
 logger = logging.getLogger(__name__)
@@ -13,10 +13,22 @@ logger = logging.getLogger(__name__)
 class BedrockAgentClient:
     """Proxy client for AWS Bedrock Agent invocations."""
 
-    def __init__(self, region: str, agent_id: str, agent_alias_id: str) -> None:
+    def __init__(
+        self,
+        region: str,
+        agent_id: str,
+        agent_alias_id: str,
+        *,
+        session: Optional[Session] = None,
+    ) -> None:
         self.agent_id = agent_id
         self.agent_alias_id = agent_alias_id
-        self._client = boto3.client("bedrock-agent-runtime", region_name=region)
+        self._session = session or Session()
+        self._client = self._session.client("bedrock-agent-runtime", region_name=region)
+
+    @property
+    def session(self) -> Session:
+        return self._session
 
     def invoke(
         self,

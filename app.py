@@ -1,18 +1,21 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import logging
 from http import HTTPStatus
 from pathlib import Path
 from typing import Optional
 from uuid import uuid4
 
-import boto3
 from botocore.exceptions import BotoCoreError, ClientError
-from flask import Flask, jsonify, request, send_from_directory
+from boto3.session import Session
+from flask import Flask, jsonify, request, send_from_directory, g
 from werkzeug.utils import secure_filename
 
 from auth import Auth0TokenVerifier, AuthError, ensure_authorized, requires_auth
 from bedrock import BedrockAgentClient
+from sagemaker import SageMakerRuntimeClient
 from config import Settings
 
 logger = logging.getLogger(__name__)
@@ -25,20 +28,29 @@ def create_app(settings: Optional[Settings] = None) -> Flask:
     app = Flask(__name__, static_folder=None)
     app.config.update(settings.as_flask_config())
 
-    # Register Auth0 verifier and Bedrock client for later use.
+    # Register Auth0 verifier and shared AWS clients for later use.
     app.extensions["auth0_verifier"] = Auth0TokenVerifier(
         domain=app.config["AUTH0_DOMAIN"],
         audience=app.config["AUTH0_AUDIENCE"],
         client_id=app.config.get("AUTH0_CLIENT_ID"),
     )
+    aws_session = Session()
+    app.extensions["aws_session"] = aws_session
     app.extensions["bedrock_client"] = BedrockAgentClient(
         region=app.config["BEDROCK_REGION"],
         agent_id=app.config["BEDROCK_AGENT_ID"],
         agent_alias_id=app.config["BEDROCK_AGENT_ALIAS_ID"],
+        session=aws_session,
     )
-    app.extensions["s3_client"] = boto3.client(
+    app.extensions["s3_client"] = aws_session.client(
         "s3",
         region_name=app.config.get("S3_REGION_NAME"),
+    )
+    app.extensions["sagemaker_client"] = SageMakerRuntimeClient(
+        region=app.config["SAGEMAKER_REGION"],
+        depth_endpoint=app.config["SAGEMAKER_DEPTH_ENDPOINT"],
+        segmentation_endpoint=app.config["SAGEMAKER_SEGMENTATION_ENDPOINT"],
+        session=aws_session,
     )
 
     register_routes(app)
@@ -73,6 +85,7 @@ def register_routes(app: Flask) -> None:
         enable_trace = bool(payload.get("enableTrace"))
 
         client: BedrockAgentClient = app.extensions["bedrock_client"]
+        g.sagemaker_client = app.extensions["sagemaker_client"]
         try:
             result = client.invoke(
                 user_input=message,
@@ -84,6 +97,64 @@ def register_routes(app: Flask) -> None:
             return jsonify({"error": str(exc)}), HTTPStatus.BAD_GATEWAY
 
         return jsonify({"sessionId": result["sessionId"], "messages": result["messages"], "trace": result.get("trace")})
+
+    @app.route("/api/depth-estimation", methods=["POST"])
+    @requires_auth()
+    def depth_estimation():
+        payload = request.get_json(silent=True) or {}
+        image_b64 = payload.get("imageBase64") or payload.get("image_base64")
+        if not image_b64:
+            return jsonify({"error": "imageBase64 is required"}), HTTPStatus.BAD_REQUEST
+
+        try:
+            image_bytes = base64.b64decode(image_b64, validate=True)
+        except (binascii.Error, ValueError):
+            return jsonify({"error": "imageBase64 must be valid base64"}), HTTPStatus.BAD_REQUEST
+
+        estimator = payload.get("estimator") or "dpt"
+        output_format = payload.get("outputFormat") or payload.get("output_format") or "png"
+
+        client: SageMakerRuntimeClient = app.extensions["sagemaker_client"]
+        try:
+            result = client.invoke_depth_estimator(
+                image_bytes=image_bytes,
+                estimator=estimator,
+                output_format=output_format,
+            )
+        except RuntimeError as exc:
+            logger.exception("Depth estimation failed")
+            return jsonify({"error": str(exc)}), HTTPStatus.BAD_GATEWAY
+
+        return jsonify(result)
+
+    @app.route("/api/segmentation", methods=["POST"])
+    @requires_auth()
+    def segmentation():
+        payload = request.get_json(silent=True) or {}
+        image_b64 = payload.get("imageBase64") or payload.get("image_base64")
+        if not image_b64:
+            return jsonify({"error": "imageBase64 is required"}), HTTPStatus.BAD_REQUEST
+
+        try:
+            image_bytes = base64.b64decode(image_b64, validate=True)
+        except (binascii.Error, ValueError):
+            return jsonify({"error": "imageBase64 must be valid base64"}), HTTPStatus.BAD_REQUEST
+
+        content_type = payload.get("contentType") or payload.get("content_type") or "application/x-image"
+        accept = payload.get("accept") or "application/json;verbose"
+
+        client: SageMakerRuntimeClient = app.extensions["sagemaker_client"]
+        try:
+            result = client.invoke_segmentation(
+                image_bytes=image_bytes,
+                content_type=content_type,
+                accept=accept,
+            )
+        except RuntimeError as exc:
+            logger.exception("Segmentation inference failed")
+            return jsonify({"error": str(exc)}), HTTPStatus.BAD_GATEWAY
+
+        return jsonify(result)
 
     @app.route("/api/upload", methods=["POST"])
     @requires_auth()
