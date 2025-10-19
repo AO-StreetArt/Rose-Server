@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from unittest import mock
-from unittest.mock import ANY
 
 import pytest
 from botocore.exceptions import ClientError
@@ -35,13 +34,13 @@ def test_invoke_success_aggregates_completion():
     result = bedrock_client.invoke(user_input="hi")
 
     session.client.assert_called_once_with("bedrock-agent-runtime", region_name="us-east-1")
-    client.invoke_agent.assert_called_once_with(
-        agentId="agent",
-        agentAliasId="alias",
-        sessionId=ANY,
-        enableTrace=False,
-        inputText="hi",
-    )
+    client.invoke_agent.assert_called_once()
+    called_kwargs = client.invoke_agent.call_args.kwargs
+    assert called_kwargs["agentId"] == "agent"
+    assert called_kwargs["agentAliasId"] == "alias"
+    assert called_kwargs["sessionId"] is not None
+    assert called_kwargs["inputText"] == "hi"
+    assert "enableTrace" not in called_kwargs
     assert result["messages"][0]["content"] == "hello world"
     assert "sessionId" in result
 

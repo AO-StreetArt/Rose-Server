@@ -4,6 +4,7 @@ import base64
 import json
 import logging
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 
 from botocore.exceptions import BotoCoreError, ClientError
 from boto3.session import Session
@@ -26,6 +27,8 @@ class SageMakerRuntimeClient:
         self.segmentation_endpoint = segmentation_endpoint
         self._session = session or Session()
         self._client = self._session.client("sagemaker-runtime", region_name=region)
+        self.depth_endpoint = _normalize_endpoint_name(self.depth_endpoint)
+        self.segmentation_endpoint = _normalize_endpoint_name(self.segmentation_endpoint)
 
     def invoke_depth_estimator(
         self,
@@ -116,3 +119,28 @@ def _parse_json_body(
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         logger.exception("Unable to decode SageMaker JSON response.")
         raise RuntimeError("Failed to decode response from SageMaker endpoint.") from exc
+
+
+def _normalize_endpoint_name(endpoint: Optional[str]) -> Optional[str]:
+    if not endpoint:
+        return endpoint
+
+    endpoint = endpoint.strip()
+    if "://" not in endpoint:
+        return endpoint or None
+
+    parsed = urlparse(endpoint)
+    path = parsed.path.strip("/")
+    if not path:
+        return endpoint
+
+    parts = [part for part in path.split("/") if part]
+    if not parts:
+        return endpoint
+
+    if "endpoints" in parts:
+        idx = parts.index("endpoints")
+        if idx + 1 < len(parts):
+            return parts[idx + 1]
+
+    return parts[-1]

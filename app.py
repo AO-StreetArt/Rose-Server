@@ -3,20 +3,20 @@ from __future__ import annotations
 import base64
 import binascii
 import logging
+from logging.handlers import RotatingFileHandler
 from http import HTTPStatus
 from pathlib import Path
 from typing import Optional
-from uuid import uuid4
-
-from botocore.exceptions import BotoCoreError, ClientError
 from boto3.session import Session
-from flask import Flask, jsonify, request, send_from_directory, g
+from flask import Flask, Response, jsonify, request, send_from_directory
 from werkzeug.utils import secure_filename
 
 from auth import Auth0TokenVerifier, AuthError, ensure_authorized, requires_auth
 from bedrock import BedrockAgentClient
+from chat_service import handle_chat_request
 from sagemaker import SageMakerRuntimeClient
 from config import Settings
+from s3_storage import S3ObjectNotFound, S3StorageClient, S3StorageError
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +45,6 @@ def _sanitize_subpath(untrusted: str) -> Optional[Path]:
 
     return Path(*sanitized_parts)
 
-
 def create_app(settings: Optional[Settings] = None) -> Flask:
     settings = settings or Settings()
     settings.validate()
@@ -67,9 +66,17 @@ def create_app(settings: Optional[Settings] = None) -> Flask:
         agent_alias_id=app.config["BEDROCK_AGENT_ALIAS_ID"],
         session=aws_session,
     )
-    app.extensions["s3_client"] = aws_session.client(
+    boto_s3_client = aws_session.client(
         "s3",
         region_name=app.config.get("S3_REGION_NAME"),
+    )
+    app.extensions["s3_client"] = boto_s3_client
+    app.extensions["s3_storage"] = S3StorageClient(
+        boto_s3_client,
+        bucket=app.config["S3_BUCKET_NAME"],
+        prefix=app.config.get("S3_OBJECT_PREFIX", ""),
+        public_prefix=app.config.get("S3_PUBLIC_URL_PREFIX"),
+        region=app.config.get("S3_REGION_NAME"),
     )
     app.extensions["sagemaker_client"] = SageMakerRuntimeClient(
         region=app.config["SAGEMAKER_REGION"],
@@ -78,11 +85,45 @@ def create_app(settings: Optional[Settings] = None) -> Flask:
         session=aws_session,
     )
 
+    configure_logging(app)
     register_routes(app)
     register_error_handlers(app)
 
     return app
 
+
+def configure_logging(app: Flask) -> None:
+    """Attach a rotating file handler so server logs are written to disk."""
+    log_path_setting = app.config.get("SERVER_LOG_PATH")
+    if log_path_setting:
+        log_path = Path(log_path_setting)
+        if not log_path.is_absolute():
+            log_path = Path(app.instance_path) / log_path
+    else:
+        log_path = Path(app.instance_path) / "logs" / "rose-server.log"
+
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers:
+        if isinstance(handler, RotatingFileHandler) and getattr(handler, "baseFilename", None) == str(log_path):
+            return
+
+    file_handler = RotatingFileHandler(
+        log_path,
+        maxBytes=10_000_000,
+        backupCount=5,
+    )
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(
+        logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
+    )
+
+    root_logger.addHandler(file_handler)
+    if root_logger.level == logging.NOTSET or root_logger.level > logging.DEBUG:
+        root_logger.setLevel(logging.DEBUG)
+    if app.logger.level > logging.DEBUG:
+        app.logger.setLevel(logging.DEBUG)
 
 def register_routes(app: Flask) -> None:
     @app.route("/ping/", methods=["GET"])
@@ -102,27 +143,7 @@ def register_routes(app: Flask) -> None:
     @app.route("/api/chat", methods=["POST"])
     @requires_auth()
     def chat():
-        payload = request.get_json(silent=True) or {}
-        message = payload.get("message")
-        if not message:
-            return jsonify({"error": "message is required"}), HTTPStatus.BAD_REQUEST
-
-        session_id = payload.get("sessionId")
-        enable_trace = bool(payload.get("enableTrace"))
-
-        client: BedrockAgentClient = app.extensions["bedrock_client"]
-        g.sagemaker_client = app.extensions["sagemaker_client"]
-        try:
-            result = client.invoke(
-                user_input=message,
-                session_id=session_id,
-                enable_trace=enable_trace,
-            )
-        except RuntimeError:
-            logger.exception("Bedrock invocation error")
-            return jsonify({"error": "chat service unavailable"}), HTTPStatus.BAD_GATEWAY
-
-        return jsonify({"sessionId": result["sessionId"], "messages": result["messages"], "trace": result.get("trace")})
+        return handle_chat_request(app)
 
     @app.route("/api/depth-estimation", methods=["POST"])
     @requires_auth()
@@ -190,41 +211,58 @@ def register_routes(app: Flask) -> None:
             return jsonify({"error": "file is required"}), HTTPStatus.BAD_REQUEST
 
         safe_name = secure_filename(uploaded_file.filename or "") or "file"
-        suffix = Path(safe_name).suffix
-
-        prefix = app.config.get("S3_OBJECT_PREFIX", "")
-        if prefix and not prefix.endswith("/"):
-            prefix = f"{prefix}/"
-
-        object_key = f"{prefix}{uuid4().hex}{suffix}"
-        bucket_name = app.config["S3_BUCKET_NAME"]
-        s3_client = app.extensions["s3_client"]
-
-        extra_args = {}
-        if uploaded_file.mimetype:
-            extra_args["ContentType"] = uploaded_file.mimetype
-
+        storage: S3StorageClient = app.extensions["s3_storage"]
         try:
-            if extra_args:
-                s3_client.upload_fileobj(uploaded_file, bucket_name, object_key, ExtraArgs=extra_args)
-            else:
-                s3_client.upload_fileobj(uploaded_file, bucket_name, object_key)
-        except (BotoCoreError, ClientError) as exc:
+            stored_object = storage.upload_fileobj(
+                uploaded_file,
+                filename=safe_name,
+                content_type=uploaded_file.mimetype,
+            )
+        except S3StorageError:
             logger.exception("Failed to upload file to S3")
             return jsonify({"error": "failed to upload file"}), HTTPStatus.BAD_GATEWAY
 
-        public_prefix = app.config.get("S3_PUBLIC_URL_PREFIX")
-        if public_prefix:
-            public_prefix = public_prefix.rstrip("/")
-            file_url = f"{public_prefix}/{object_key}"
-        else:
-            region = app.config.get("S3_REGION_NAME")
-            if region and region != "us-east-1":
-                file_url = f"https://{bucket_name}.s3.{region}.amazonaws.com/{object_key}"
-            else:
-                file_url = f"https://{bucket_name}.s3.amazonaws.com/{object_key}"
+        return jsonify({"url": stored_object.url})
 
-        return jsonify({"url": file_url})
+    @app.route("/api/files/<path:object_key>", methods=["GET"])
+    @requires_auth()
+    def get_file(object_key: str):
+        storage: S3StorageClient = app.extensions["s3_storage"]
+        sanitized_key = storage.sanitize_key(object_key)
+        if not sanitized_key:
+            return jsonify({"error": "invalid object key"}), HTTPStatus.BAD_REQUEST
+
+        try:
+            s3_response = storage.get_object(sanitized_key)
+        except S3ObjectNotFound:
+            return jsonify({"error": "file not found"}), HTTPStatus.NOT_FOUND
+        except S3StorageError:
+            logger.exception("Failed to retrieve S3 object %s", sanitized_key)
+            return jsonify({"error": "failed to retrieve file"}), HTTPStatus.BAD_GATEWAY
+
+        body = s3_response.get("Body")
+        if body is None:
+            return jsonify({"error": "file unavailable"}), HTTPStatus.BAD_GATEWAY
+
+        def stream_body():
+            try:
+                while True:
+                    chunk = body.read(8192)
+                    if not chunk:
+                        break
+                    yield chunk
+            finally:
+                close = getattr(body, "close", None)
+                if callable(close):
+                    close()
+
+        content_type = s3_response.get("ContentType") or "application/octet-stream"
+        content_length = s3_response.get("ContentLength")
+        response = Response(stream_body(), mimetype=content_type)
+        if content_length is not None:
+            response.headers["Content-Length"] = str(content_length)
+        response.headers["Content-Disposition"] = f'inline; filename="{Path(sanitized_key).name}"'
+        return response
 
     @app.route("/", defaults={"path": ""})
     @app.route("/<path:path>")
