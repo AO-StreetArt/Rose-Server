@@ -25,7 +25,7 @@ Rose is an AI-enabled web application for searching, viewing, analyzing, and —
 ### Cloud Footprint
 
 - **AWS Bedrock Agent** orchestrates reasoning steps with domain-specific Action Groups.
-- **AWS SageMaker Endpoints** host high-value perception models (semantic segmentation, depth, reconstruction); transitioning workloads to Lambda is a cost-optimization target.
+- **AWS SageMaker Endpoints** host high-value perception models (semantic segmentation, depth, reconstruction)
 - **AWS Lambda** functions power lightweight agent actions such as web search, arithmetic, and glue logic.
 - **Rose Server** is deployed behind an **Elastic Load Balancer**, with traffic managed via **Route53**.
 - All internal services run inside a **VPC**; Rose Server is publicly exposed. HTTPS, OAuth 2.0, and JWTs (Auth0) enforce security boundaries.
