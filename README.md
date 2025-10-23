@@ -14,9 +14,9 @@ Rose is an AI-enabled web application for searching, viewing, analyzing, and —
 
 ### Major Components
 
-- `AO-StreetArt/Rose` — Core spatial intelligence library that processes image streams, constructs spatial memories, and exposes reusable ML primitives.
+- [`AO-StreetArt/Rose`](https://github.com/AO-StreetArt/Rose) — Core spatial intelligence library housing perception and reconstruction algorithms, Lambda implementations, and Docker images.
 - `AO-StreetArt/Rose-Server` (this repo) — Flask backend that serves the compiled React application, applies Auth0-based access control, and proxies chat and ML requests to Bedrock/SageMaker.
-- `AO-StreetArt/Rose-UI` — React single-page application with chat, 2D media review, and 3D scene visualization.
+- [`AO-StreetArt/Rose-UI`](https://github.com/AO-StreetArt/Rose-UI) — React single-page application with chat, 2D media review, and 3D scene visualization.
 
 ### Cloud Footprint
 
