@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="images/logo.png" alt="Rose logo" width="160" />
+</p>
+
 # Rose Server
 
 Rose is an AI-enabled web application for searching, viewing, analyzing, and — most importantly — generating 3D scenes from images. The platform blends LLM-driven agent workflows, traditional retrieval and orchestration logic (e.g., web search, data lookups), computer vision models for perception, and state-of-the-art 3D asset generation pipelines such as TripoSR and 3DTopia. This repository contains the production web server that hosts the React front end, mediates authentication, and brokers ML workloads to AWS Bedrock and SageMaker.
