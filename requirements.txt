@@ -3,6 +3,6 @@ PyJWT[crypto]==2.8.0
 requests==2.32.4
 boto3>=1.40.45
 botocore>=1.40.45
-Werkzeug==3.0.6
+Werkzeug==3.1.4
 python-dotenv==1.0.1
 Pillow>=10.0.0
